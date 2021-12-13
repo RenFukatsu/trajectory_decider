@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="HZ" default="10.0" />
+    <arg name="PREDICT_TIME" default="5.0" />
+
+    <node pkg="trajectory_decider" type="trajectory_decider_node" name="trajectory_decider" output="screen" >
+        <param name="HZ" value="$(arg HZ)" />
+        <param name="PREDICT_TIME" value="$(arg PREDICT_TIME)" />
+    </node>
+</launch>

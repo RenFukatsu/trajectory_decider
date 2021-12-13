@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>trajectory_decider</name>
+  <version>0.0.0</version>
+  <description>The trajectory_decider package</description>
+
+  <maintainer email="ren@todo.todo">ren</maintainer>
+  <license>TODO</license>
+
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>roscpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>kalman_filter</depend>
+  <depend>color_detector_params</depend>
+  <depend>roomba_500driver_meiji</depend>
+  <depend>trajectory_generator</depend>
+
+  <export>
+  </export>
+</package>
