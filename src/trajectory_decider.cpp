@@ -3,9 +3,13 @@
 TrajectoryDecider::TrajectoryDecider() : private_nh_("~") {
     private_nh_.param("HZ", HZ, 10.0);
     private_nh_.param("PREDICT_TIME", PREDICT_TIME, 5.0);
-    TIME_DEFFERENCE = 1.0 / HZ;
+    private_nh_.param("TIME_DIFFERENCE", TIME_DIFFERENCE, 0.5);
+    private_nh_.param("DISTANCE_GAIN", DISTANCE_GAIN, 1.0);
+    private_nh_.param("HEAD_GAIN", HEAD_GAIN, 1.0);
+    private_nh_.param("SPEED_GAIN", SPEED_GAIN, 1.0);
+    private_nh_.param("EXIST_ROBOT_GAIN", EXIST_ROBOT_GAIN, 1.0);
 
-    path_pub_ = nh_.advertise<nav_msgs::Path>("path", 1);
+    path_pub_ = nh_.advertise<trajectory_generator::Path>("path", 1);
 
     std::vector<color_detector_params_hsv::ThresholdHSV> _;
     color_detector_params_hsv::init(colors_, _);
@@ -47,51 +51,87 @@ void TrajectoryDecider::move_targets(const kalman_filter::TargetArrayConstPtr& i
         geometry_msgs::Point point = target.position;
         double x_vel = target.twist.linear.x;
         double y_vel = target.twist.linear.y;
-        for (double time = 0; time <= PREDICT_TIME; time += TIME_DEFFERENCE) {
-            point.x += x_vel * TIME_DEFFERENCE;
-            point.y += y_vel * TIME_DEFFERENCE;
+        for (double time = 0; time <= PREDICT_TIME; time += TIME_DIFFERENCE) {
+            point.x += x_vel * TIME_DIFFERENCE;
+            point.y += y_vel * TIME_DIFFERENCE;
             est.estimate_move.push_back(point);
         }
         targets_.push_back(est);
     }
 }
 
-double TrajectoryDecider::calc_distance_cost(const nav_msgs::Path& path) {
-    static auto norm = [](const geometry_msgs::Point& a, const geometry_msgs::Point& b) {
-        return std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y));
-    };
-    double min_dist = 10.0;
-    for (const auto& target : targets_) {
-        geometry_msgs::Point target_last_point = target.estimate_move.back();
-        geometry_msgs::PoseStamped robot_last_pose = path.poses.back();
-        double dist = norm(target_last_point, robot_last_pose.pose.position);
-        min_dist = std::min(dist, min_dist);
+double TrajectoryDecider::norm(const geometry_msgs::PoseStamped& a, const geometry_msgs::PoseStamped& b) {
+    return norm(a.pose.position, b.pose.position);
+}
+
+double TrajectoryDecider::norm(const geometry_msgs::Point& a, const geometry_msgs::Point& b) {
+    return norm(a.x, a.y, b.x, b.y);
+}
+
+double TrajectoryDecider::norm(double x1, double y1, double x2, double y2) {
+    return std::sqrt((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2));
+}
+
+double TrajectoryDecider::calc_distance_cost(const trajectory_generator::Path& path, const EstimateTarget& target) {
+    geometry_msgs::Point target_last_point = target.estimate_move.back();
+    geometry_msgs::PoseStamped robot_last_point = path.poses.back();
+    double dist = norm(target_last_point, robot_last_point.pose.position);
+    return 1.0 / (1.0 + dist);
+}
+
+double TrajectoryDecider::calc_head_cost(const trajectory_generator::Path& path, const EstimateTarget& target) {
+    double target_theta = std::atan2(target.target.twist.linear.y, target.target.twist.linear.x);
+    geometry_msgs::PoseStamped robot_last_point = path.poses.back();
+    tf2::Quaternion quat;
+    tf2::convert(robot_last_point.pose.orientation, quat);
+    double r, p, y;
+    tf2::Matrix3x3(quat).getRPY(r, p, y);
+    double robot_theta = y;
+    return 1.0 / (1.0 + std::abs(target_theta - robot_theta));
+}
+
+double TrajectoryDecider::calc_speed_cost(const trajectory_generator::Path& path, const EstimateTarget& target) {
+    double tx = target.target.twist.linear.x;
+    double ty = target.target.twist.linear.y;
+    double target_speed = std::sqrt(tx * tx + ty * ty);
+    double robot_speed = path.velocity;
+    return 1.0 / (1.0 + std::abs(target_speed - robot_speed));
+}
+
+double TrajectoryDecider::calc_exist_robot_cost(const trajectory_generator::Path& path,
+                                                const std::vector<trajectory_generator::Path>& decided_paths) {
+    double cost = 1.0;
+    for (const auto& dpath : decided_paths) {
+        double dist = norm(path.poses.back(), dpath.poses.back());
+        cost *= 1.0 - 1.0 / (1.0 + dist);
     }
-    return 1.0 / 1.0 + min_dist;
+    return cost;
 }
 
-double TrajectoryDecider::calc_head_cost() { return 0; }
-
-double TrajectoryDecider::calc_speed_cost() { return 0; }
-
-double TrajectoryDecider::calc_exist_robot_cost() { return 0; }
-
-double TrajectoryDecider::calc_score(const nav_msgs::Path& path) {
-    double dist_cost = calc_distance_cost(path);
-    // double head_cost = calc_head_cost();
-    // double speed_cost = calc_speed_cost();
-    // double exist_cost = calc_exist_robot_cost();
-    return dist_cost;
+double TrajectoryDecider::calc_score(const trajectory_generator::Path& path,
+                                     const std::vector<trajectory_generator::Path>& decided_paths) {
+    double max_cost = 0.0;
+    for (const auto& target : targets_) {
+        double dist_cost = calc_distance_cost(path, target);
+        double head_cost = calc_head_cost(path, target);
+        double speed_cost = calc_speed_cost(path, target);
+        double exist_cost = calc_exist_robot_cost(path, decided_paths);
+        double cost = (DISTANCE_GAIN * dist_cost + HEAD_GAIN * head_cost + SPEED_GAIN * speed_cost) * EXIST_ROBOT_GAIN *
+                      exist_cost;
+        max_cost = std::max(cost, max_cost);
+    }
+    return max_cost;
 }
 
-nav_msgs::Path TrajectoryDecider::pick_one_trajectry() {
+trajectory_generator::Path TrajectoryDecider::pick_one_trajectry(
+    const std::vector<trajectory_generator::Path>& decided_paths) {
     double max_score = 0;
     int roomba_index = -1;
     int path_index = -1;
-    nav_msgs::Path best_path;
+    trajectory_generator::Path best_path;
     for (size_t i = 0; i < roombas_paths_.size(); i++) {
         for (size_t j = 0; j < roombas_paths_[i].paths.size(); j++) {
-            double score = calc_score(roombas_paths_[i].paths[j]);
+            double score = calc_score(roombas_paths_[i].paths[j], decided_paths);
             if (max_score < score) {
                 max_score = score;
                 roomba_index = i;
@@ -101,6 +141,7 @@ nav_msgs::Path TrajectoryDecider::pick_one_trajectry() {
     }
     ROS_ASSERT(roomba_index != -1);
     best_path = roombas_paths_[roomba_index].paths[path_index];
+    best_path.id = roomba_index;
     roombas_paths_.erase(roombas_paths_.begin() + roomba_index);
     return best_path;
 }
@@ -115,12 +156,14 @@ void TrajectoryDecider::decide_trajectory() {
     ROS_INFO_STREAM_THROTTLE(10.0, "path / roomba :" << num_path);
     ROS_INFO_STREAM_THROTTLE(10.0, "point / path :" << num_point);
     ROS_INFO_STREAM_THROTTLE(10.0, "r * (r + 1) / 2 * r * pa * t :" << num_roomba * (num_roomba + 1) / 2 * num_roomba *
-                                                                            num_path * num_target);
+                                                                           num_path * num_target);
     ROS_DEBUG_STREAM_THROTTLE(
         10.0, "upper * point :" << num_roomba * (num_roomba + 1) / 2 * num_roomba * num_path * num_target * num_point);
+    std::vector<trajectory_generator::Path> decided_paths;
     for (size_t i = 0; i < colors_.size(); i++) {
-        nav_msgs::Path path = pick_one_trajectry();
+        trajectory_generator::Path path = pick_one_trajectry(decided_paths);
         path_pub_.publish(path);
+        decided_paths.push_back(path);
     }
 }
 

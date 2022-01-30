@@ -13,6 +13,7 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   std_msgs
   kalman_filter
+  tf2_ros
   color_detector_params
   roomba_500driver_meiji
   trajectory_generator

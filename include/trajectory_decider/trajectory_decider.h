@@ -1,37 +1,43 @@
 #ifndef TARGET_DECIDER_H_
 #define TARGET_DECIDER_H_
 
-#include <ros/ros.h>
 #include <geometry_msgs/PoseWithCovarianceStamped.h>
-#include <nav_msgs/Path.h>
+#include <ros/ros.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <tf2_ros/transform_listener.h>
 
-#include "roomba_500driver_meiji/RoombaCtrl.h"
 #include "color_detector_params/hsv.h"
-#include "trajectory_generator/PathArray.h"
 #include "kalman_filter/TargetArray.h"
+#include "roomba_500driver_meiji/RoombaCtrl.h"
+#include "trajectory_generator/PathArray.h"
 
 class TrajectoryDecider {
  public:
     struct EstimateTarget {
-       kalman_filter::Target target;
-       std::vector<geometry_msgs::Point> estimate_move;
+        kalman_filter::Target target;
+        std::vector<geometry_msgs::Point> estimate_move;
     };
     TrajectoryDecider();
     void process();
     bool check_all_updates_are_true();
     void set_all_updates_to_false();
-    void target_callback(const kalman_filter::TargetArrayConstPtr &input_targets);
-    void roomba_pose_callback(const geometry_msgs::PoseWithCovarianceStampedConstPtr &input_pose_, int my_number);
+    void target_callback(const kalman_filter::TargetArrayConstPtr& input_targets);
+    void roomba_pose_callback(const geometry_msgs::PoseWithCovarianceStampedConstPtr& input_pose_, int my_number);
     void roomba_pose_callback();
     void move_targets(const kalman_filter::TargetArrayConstPtr& input_targets);
     void decide_trajectory();
-    nav_msgs::Path pick_one_trajectry();
-    double calc_score(const nav_msgs::Path& path);
-    double calc_distance_cost(const nav_msgs::Path& path);
-    double calc_head_cost();
-    double calc_speed_cost();
-    double calc_exist_robot_cost();
+    trajectory_generator::Path pick_one_trajectry(const std::vector<trajectory_generator::Path>& decided_paths);
+    double calc_score(const trajectory_generator::Path& path,
+                      const std::vector<trajectory_generator::Path>& decided_paths);
+    double calc_distance_cost(const trajectory_generator::Path& path, const EstimateTarget& target);
+    double calc_head_cost(const trajectory_generator::Path& path, const EstimateTarget& target);
+    double calc_speed_cost(const trajectory_generator::Path& path, const EstimateTarget& target);
+    double calc_exist_robot_cost(const trajectory_generator::Path& path,
+                                 const std::vector<trajectory_generator::Path>& decided_paths);
     void path_array_callback(const trajectory_generator::PathArrayConstPtr& input_paths, int my_number);
+    double norm(const geometry_msgs::PoseStamped& a, const geometry_msgs::PoseStamped& b);
+    double norm(const geometry_msgs::Point& a, const geometry_msgs::Point& b);
+    double norm(double x1, double y1, double x2, double y2);
 
  private:
     ros::NodeHandle nh_;
@@ -43,7 +49,11 @@ class TrajectoryDecider {
     ros::Subscriber target_sub_;
     double HZ;
     double PREDICT_TIME;
-    double TIME_DEFFERENCE;
+    double TIME_DIFFERENCE;
+    double DISTANCE_GAIN;
+    double HEAD_GAIN;
+    double SPEED_GAIN;
+    double EXIST_ROBOT_GAIN;
     std::vector<std::string> colors_;
     std::vector<EstimateTarget> targets_;
     std::vector<geometry_msgs::PoseWithCovarianceStamped> roomba_poses_;
