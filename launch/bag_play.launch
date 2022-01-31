@@ -2,45 +2,27 @@
 <launch>
     <param name="use_sim_time" value="true" />
 
-    <arg name="bag_dir" default="$(env HOME)/bagfiles/roomba/random_half_20211004/first" />
-    <arg name="bag_command" default="$(arg bag_dir)/roomba2_dkan_random_walk_2021-10-04-21-47-54.bag $(arg bag_dir)/roomba4_dkan_random_walk_2021-10-04-21-48-12.bag $(arg bag_dir)/roomba6_dkan_random_walk_2021-10-04-21-48-33.bag $(arg bag_dir)/roomba3_dkan_random_walk_2021-10-04-21-48-03.bag $(arg bag_dir)/roomba5_dkan_random_walk_2021-10-04-21-48-21.bag" />
-    <!-- <arg name="bag_dir" default="/home/ren/bagfiles/roomba/random_half_20211004/second" />
-    <arg name="bag_command" default="$(arg bag_dir)/roomba1_dkan_random_walk_2021-10-04-23-11-03.bag $(arg bag_dir)/roomba4_dkan_random_walk_2021-10-04-23-12-35.bag $(arg bag_dir)/roomba6_dkan_random_walk_2021-10-04-23-13-02.bag $(arg bag_dir)/roomba3_dkan_random_walk_2021-10-04-23-12-23.bag $(arg bag_dir)/roomba5_dkan_random_walk_2021-10-04-23-12-49.bag" /> -->
+    <arg name="bag_dir" default="$(env HOME)/bagfiles/roomba/follow_walk_20220127" />
+    <!-- <arg name="bag_command" default="$(arg bag_dir)/roomba1.bag $(arg bag_dir)/roomba2.bag $(arg bag_dir)/roomba3.bag $(arg bag_dir)/roomba4.bag $(arg bag_dir)/roomba5.bag $(arg bag_dir)/roomba6.bag $(arg bag_dir)/roomba7.bag $(arg bag_dir)/roomba8.bag $(arg bag_dir)/roomba9.bag" /> -->
+    <arg name="bag_command" default="$(arg bag_dir)/roomba1.bag $(arg bag_dir)/roomba2.bag $(arg bag_dir)/roomba3.bag $(arg bag_dir)/roomba4.bag" />
     <arg name="map_file" default="$(find roomba_visualizer)/map/map.yaml" />
-    <arg name="rviz_config" default="$(find trajectory_generator)/rviz/bag_play.rviz" />
+    <arg name="rviz_config" default="$(find trajectory_decider)/rviz/bag_play.rviz" />
 
     <arg name="add_bag_option" default="" />
     <node pkg="rosbag" type="play" name="rosbag_play" args="--clock $(arg add_bag_option) $(arg bag_command)" output="screen" required="true" />
 
-    <node pkg="kalman_filter" type="target_tracker" name="target_tracker" />
-
     <node pkg="map_server" type="map_server" name="map_server" args="$(arg map_file)" />
 
-    <node pkg="trajectory_decider" type="trajectory_decider_node" name="trajectory_decider" output="screen" >
-        <param name="HZ" value="10.0" />
-        <param name="PREDICT_TIME" value="8.0" />
-    </node>
+    <include file="$(find kalman_filter)/launch/dynamixel_controller.launch" />
+    <!-- <include file="$(find trajectory_decider)/launch/trajectory_decider.launch" /> -->
 
     <include file="$(find trajectory_generator)/launch/roomba.launch" >
-        <arg name="roomba" value="roomba2" />
-    </include>
-
-    <include file="$(find trajectory_generator)/launch/roomba.launch" >
-        <arg name="roomba" value="roomba3" />
+        <arg name="roomba" value="roomba1" />
     </include>
 
     <include file="$(find trajectory_generator)/launch/roomba.launch" >
         <arg name="roomba" value="roomba4" />
     </include>
 
-    <include file="$(find trajectory_generator)/launch/roomba.launch" >
-        <arg name="roomba" value="roomba5" />
-    </include>
-
-    <include file="$(find trajectory_generator)/launch/roomba.launch" >
-        <arg name="roomba" value="roomba6" />
-    </include>
-
     <node name="rviz" pkg="rviz" type="rviz" args="-d $(arg rviz_config)" />
-
 </launch>

@@ -5,26 +5,40 @@ TrajectoryDecider::TrajectoryDecider() : private_nh_("~") {
     private_nh_.param("PREDICT_TIME", PREDICT_TIME, 5.0);
     private_nh_.param("TIME_DIFFERENCE", TIME_DIFFERENCE, 0.5);
     private_nh_.param("DISTANCE_GAIN", DISTANCE_GAIN, 1.0);
-    private_nh_.param("HEAD_GAIN", HEAD_GAIN, 1.0);
-    private_nh_.param("SPEED_GAIN", SPEED_GAIN, 1.0);
+    private_nh_.param("HEAD_GAIN", HEAD_GAIN, 0.2);
+    private_nh_.param("SPEED_GAIN", SPEED_GAIN, 0.1);
     private_nh_.param("EXIST_ROBOT_GAIN", EXIST_ROBOT_GAIN, 1.0);
 
     path_pub_ = nh_.advertise<trajectory_generator::Path>("path", 1);
 
-    std::vector<color_detector_params_hsv::ThresholdHSV> _;
-    color_detector_params_hsv::init(colors_, _);
-    roomba_poses_updated_.resize(colors_.size());
-    path_array_updated_.resize(colors_.size());
+    read_tracker_ids();
+    roomba_poses_.resize(tracker_robot_ids_.size());
+    roomba_poses_updated_.resize(tracker_robot_ids_.size());
+    path_array_updated_.resize(tracker_robot_ids_.size());
+    roombas_paths_.resize(tracker_robot_ids_.size());
     set_all_updates_to_false();
-    roomba_pose_subs_.resize(colors_.size());
-    path_array_subs_.resize(colors_.size());
+    roomba_pose_subs_.resize(tracker_robot_ids_.size());
+    path_array_subs_.resize(tracker_robot_ids_.size());
     target_sub_ = nh_.subscribe("target", 1, &TrajectoryDecider::target_callback, this);
-    for (size_t i = 0; i < colors_.size(); i++) {
-        std::string roomba = "roomba" + std::to_string(i + 1);
+    visualize_trajectory_pub_ = nh_.advertise<visualization_msgs::Marker>("visualize_trajectory", 1);
+    for (size_t i = 0; i < tracker_robot_ids_.size(); i++) {
+        int id = tracker_robot_ids_[i];
+        std::string roomba = "roomba" + std::to_string(id);
         roomba_pose_subs_[i] = nh_.subscribe<geometry_msgs::PoseWithCovarianceStamped>(
-            roomba + "/target/position", 1, boost::bind(&TrajectoryDecider::roomba_pose_callback, this, _1, i + 1));
+            roomba + "/amcl_pose", 1, boost::bind(&TrajectoryDecider::roomba_pose_callback, this, _1, i));
         path_array_subs_[i] = nh_.subscribe<trajectory_generator::PathArray>(
-            roomba + "/trajectries", 1, boost::bind(&TrajectoryDecider::path_array_callback, this, _1, i + 1));
+            roomba + "/trajectories", 1, boost::bind(&TrajectoryDecider::path_array_callback, this, _1, i));
+    }
+}
+
+void TrajectoryDecider::read_tracker_ids() {
+    XmlRpc::XmlRpcValue id_list;
+    ROS_ASSERT(private_nh_.getParam("TRACKER_ROOMBA_IDS", id_list));
+    ROS_ASSERT(id_list.getType() == XmlRpc::XmlRpcValue::TypeArray);
+
+    for (size_t i = 0; i < id_list.size(); i++) {
+        ROS_ASSERT(id_list[i].getType() == XmlRpc::XmlRpcValue::TypeInt);
+        tracker_robot_ids_.push_back(id_list[i]);
     }
 }
 
@@ -34,14 +48,15 @@ void TrajectoryDecider::target_callback(const kalman_filter::TargetArrayConstPtr
 }
 
 void TrajectoryDecider::roomba_pose_callback(const geometry_msgs::PoseWithCovarianceStampedConstPtr& input_pose,
-                                             int my_number) {
-    roomba_poses_[my_number - 1] = *input_pose;
-    roomba_poses_updated_[my_number - 1] = 1;
+                                             int id) {
+    roomba_poses_[id] = *input_pose;
+    roomba_poses_updated_[id] = 1;
 }
 
-void TrajectoryDecider::path_array_callback(const trajectory_generator::PathArrayConstPtr& input_paths, int my_number) {
-    roombas_paths_[my_number - 1] = *input_paths;
-    path_array_updated_[my_number - 1] = 1;
+void TrajectoryDecider::path_array_callback(const trajectory_generator::PathArrayConstPtr& input_paths, int id) {
+    roombas_paths_.resize(tracker_robot_ids_.size());
+    roombas_paths_[id] = *input_paths;
+    path_array_updated_[id] = 1;
 }
 
 void TrajectoryDecider::move_targets(const kalman_filter::TargetArrayConstPtr& input_targets) {
@@ -73,7 +88,7 @@ double TrajectoryDecider::norm(double x1, double y1, double x2, double y2) {
 }
 
 double TrajectoryDecider::calc_distance_cost(const trajectory_generator::Path& path, const EstimateTarget& target) {
-    geometry_msgs::Point target_last_point = target.estimate_move.back();
+    geometry_msgs::Point target_last_point = target.estimate_move.front();
     geometry_msgs::PoseStamped robot_last_point = path.poses.back();
     double dist = norm(target_last_point, robot_last_point.pose.position);
     return 1.0 / (1.0 + dist);
@@ -112,12 +127,19 @@ double TrajectoryDecider::calc_score(const trajectory_generator::Path& path,
                                      const std::vector<trajectory_generator::Path>& decided_paths) {
     double max_cost = 0.0;
     for (const auto& target : targets_) {
-        double dist_cost = calc_distance_cost(path, target);
-        double head_cost = calc_head_cost(path, target);
-        double speed_cost = calc_speed_cost(path, target);
-        double exist_cost = calc_exist_robot_cost(path, decided_paths);
-        double cost = (DISTANCE_GAIN * dist_cost + HEAD_GAIN * head_cost + SPEED_GAIN * speed_cost) * EXIST_ROBOT_GAIN *
-                      exist_cost;
+        double dist_cost = calc_distance_cost(path, target) * DISTANCE_GAIN;
+        double head_cost = calc_head_cost(path, target) * HEAD_GAIN;
+        double speed_cost = calc_speed_cost(path, target) * SPEED_GAIN;
+        double exist_cost = calc_exist_robot_cost(path, decided_paths) * EXIST_ROBOT_GAIN;
+        double cost = (dist_cost + head_cost + speed_cost) * exist_cost;
+        if (max_cost < cost) {
+            ROS_INFO_STREAM("==========================");
+            ROS_INFO_STREAM("dist cost  : " << dist_cost);
+            ROS_INFO_STREAM("head cost  : " << head_cost);
+            ROS_INFO_STREAM("speed cost : " << speed_cost);
+            ROS_INFO_STREAM("exist cost : " << exist_cost);
+            ROS_INFO_STREAM("total cost : " << cost);
+        }
         max_cost = std::max(cost, max_cost);
     }
     return max_cost;
@@ -147,7 +169,7 @@ trajectory_generator::Path TrajectoryDecider::pick_one_trajectry(
 }
 
 void TrajectoryDecider::decide_trajectory() {
-    int num_roomba = colors_.size();
+    int num_roomba = tracker_robot_ids_.size();
     int num_target = targets_.size();
     int num_path = roombas_paths_.size();
     int num_point = roombas_paths_.front().paths.size();
@@ -160,10 +182,13 @@ void TrajectoryDecider::decide_trajectory() {
     ROS_DEBUG_STREAM_THROTTLE(
         10.0, "upper * point :" << num_roomba * (num_roomba + 1) / 2 * num_roomba * num_path * num_target * num_point);
     std::vector<trajectory_generator::Path> decided_paths;
-    for (size_t i = 0; i < colors_.size(); i++) {
+    ROS_INFO_STREAM("for mae");
+    for (auto i : tracker_robot_ids_) {
         trajectory_generator::Path path = pick_one_trajectry(decided_paths);
         path_pub_.publish(path);
+        ROS_INFO_STREAM("pub path");
         decided_paths.push_back(path);
+        visualize_trajectory(path);
     }
 }
 
@@ -196,6 +221,32 @@ void TrajectoryDecider::set_all_updates_to_false() {
     for (size_t i = 0; i < path_array_updated_.size(); i++) {
         path_array_updated_[i] = 0;
     }
+}
+
+void TrajectoryDecider::visualize_trajectory(const trajectory_generator::Path& path) {
+    visualization_msgs::Marker trajectory;
+    trajectory.header.frame_id = "map";
+    trajectory.header.stamp = ros::Time::now();
+    trajectory.color.r = 1;
+    trajectory.color.g = 0;
+    trajectory.color.b = 0;
+    trajectory.color.a = 0.8;
+    trajectory.ns = visualize_trajectory_pub_.getTopic();
+    trajectory.type = visualization_msgs::Marker::LINE_STRIP;
+    trajectory.action = visualization_msgs::Marker::ADD;
+    trajectory.lifetime = ros::Duration();
+    trajectory.id = 0;
+    trajectory.scale.x = 0.02;
+    geometry_msgs::Pose pose;
+    pose.orientation.w = 1;
+    trajectory.pose = pose;
+    geometry_msgs::Point p;
+    for (const auto& pose : path.poses) {
+        p.x = pose.pose.position.x;
+        p.y = pose.pose.position.y;
+        trajectory.points.push_back(p);
+    }
+    visualize_trajectory_pub_.publish(trajectory);
 }
 
 void TrajectoryDecider::process() {

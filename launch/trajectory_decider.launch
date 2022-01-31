@@ -6,5 +6,7 @@
     <node pkg="trajectory_decider" type="trajectory_decider_node" name="trajectory_decider" output="screen" >
         <param name="HZ" value="$(arg HZ)" />
         <param name="PREDICT_TIME" value="$(arg PREDICT_TIME)" />
+        <rosparam command="load" file="$(find trajectory_decider)/config/tracker_roombas.yaml" />
+        <rosparam command="load" file="$(find trajectory_decider)/config/gain_parameter.yaml" />
     </node>
 </launch>
